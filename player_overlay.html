@@ -1,0 +1,212 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Video Player — overlay subtitles (fullscreen-safe)</title>
+<style>
+  :root{
+    --bg:#000;
+    --sub-bg: rgba(0,0,0,0.56);
+    --sub-color: #fff;
+    --sub-font: 'Segoe UI', Roboto, Arial, sans-serif;
+  }
+  html,body { height:100%; margin:0; background:var(--bg); color:#ddd; font-family:var(--sub-font); }
+  .page { height:100%; display:flex; align-items:center; justify-content:center; padding:18px; box-sizing:border-box; }
+  .player-wrap {
+    position:relative;
+    width: min(960px, 95vw);
+    background: #111;
+    border-radius: 10px;
+    overflow: hidden;
+    box-shadow: 0 12px 36px rgba(0,0,0,0.6);
+  }
+  /* Make video responsive */
+  video { display:block; width:100%; height:auto; background:#000; }
+  /* subtitle overlay */
+  .subtitle-overlay {
+    position:absolute;
+    left:50%;
+    transform:translateX(-50%);
+    bottom:10%;                /* slightly above bottom controls */
+    max-width:84%;
+    min-width:28%;
+    pointer-events:none;
+    text-align:center;
+    padding:10px 14px;
+    border-radius:10px;
+    background:var(--sub-bg);
+    color:var(--sub-color);
+    font-size:clamp(14px, 2.2vw, 20px); /* responsive text */
+    line-height:1.15;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.55);
+    transition: opacity 0.12s ease, transform 0.12s ease;
+    white-space:pre-wrap;
+    word-break:break-word;
+  }
+  .subtitle-overlay.hidden { opacity:0; transform: translateX(-50%) translateY(6px); }
+  /* Controls bar below the player */
+  .controls {
+    display:flex;
+    gap:12px;
+    align-items:center;
+    justify-content:center;
+    padding:10px;
+    background:transparent;
+    color:#ddd;
+  }
+  .controls button {
+    padding:6px 10px;
+    border:1px solid rgba(255,255,255,0.08);
+    background:rgba(255,255,255,0.03);
+    color:#fff;
+    border-radius:6px;
+    cursor:pointer;
+  }
+  .controls button:hover { filter:brightness(1.12); }
+  .controls .right { margin-left:auto; padding-right:12px; font-size:13px;}
+  /* fullscreen styles: when .fs class is added to player-wrap */
+  .player-wrap.fs { width:100vw; height:100vh; border-radius:0; }
+  .player-wrap.fs video { width:100%; height:100%; object-fit:contain; }
+  .player-wrap.fs .subtitle-overlay { bottom:7%; max-width:86%; font-size:clamp(16px, 2.8vw, 26px); }
+  /* small accessibility tweak on small screens */
+  @media (max-width:520px){
+    .subtitle-overlay { bottom:12%; font-size:16px; padding:8px 10px; }
+  }
+</style>
+</head>
+<body>
+  <div class="page">
+    <div id="container" class="player-wrap" tabindex="0">
+      <video id="video" controls crossorigin="anonymous" playsinline>
+        <source src="sample2.mp4" type="video/mp4">
+      </video>
+
+      <div id="subtitle" class="subtitle-overlay hidden" aria-live="polite" role="status"></div>
+    </div>
+  </div>
+
+  <div style="position:fixed; right:18px; bottom:18px; z-index:9999; display:flex; gap:8px;">
+    <div class="controls" style="background:transparent; border-radius:8px;">
+      <button id="reloadSrt">Reload SRT</button>
+      <button id="fullscreenBtn">Fullscreen</button>
+    </div>
+  </div>
+
+<script>
+/* SRT parser: returns [{start,end,text}] */
+function parseSRT(srtText){
+  const lines = srtText.replace(/\r/g,'').split('\n');
+  const out = []; let i=0;
+  while(i<lines.length){
+    if(!lines[i].trim()){ i++; continue; }
+    // skip index
+    const idx = lines[i++].trim();
+    const timeLine = lines[i++]||'';
+    const m = timeLine.match(/(\d{2}:\d{2}:\d{2}[,\.]\d{3})\s*-->\s*(\d{2}:\d{2}:\d{2}[,\.]\d{3})/);
+    if(!m) continue;
+    const start = toSeconds(m[1]), end = toSeconds(m[2]);
+    let text = '';
+    while(i<lines.length && lines[i].trim()){
+      text += (text?'\n':'') + lines[i++];
+    }
+    out.push({start,end,text});
+  }
+  return out;
+}
+function toSeconds(t){ t=t.replace(',','.'); const p=t.split(':'); const s=parseFloat(p[2]); const m=parseInt(p[1],10); const h=parseInt(p[0],10); return h*3600 + m*60 + s; }
+
+(async function(){
+  const video = document.getElementById('video');
+  const container = document.getElementById('container');
+  const subEl = document.getElementById('subtitle');
+  const reloadBtn = document.getElementById('reloadSrt');
+  const fsBtn = document.getElementById('fullscreenBtn');
+
+  let cues = [];
+  async function loadSrt(){
+    try{
+      const res = await fetch('sample.srt', {cache:'no-store'});
+      const srtText = await res.text();
+      cues = parseSRT(srtText);
+      console.log('Loaded', cues.length, 'cues');
+    }catch(e){
+      console.error('Failed to load sample.srt', e);
+      cues = [];
+    }
+  }
+
+  await loadSrt();
+
+  function findCueAtTime(t){
+    return cues.find(c => t >= c.start && t <= c.end);
+  }
+
+  // update loop always running with rAF
+  let lastCueText = null;
+  function update(){
+    const t = video.currentTime;
+    const cue = findCueAtTime(t);
+    if(cue){
+      if(subEl.innerText !== cue.text){
+        subEl.innerText = cue.text;
+        subEl.classList.remove('hidden');
+        lastCueText = cue.text;
+      }
+    } else {
+      // if no cue at current time: hide subtitle only when not paused OR no last cue
+      if(video.paused){
+        // when paused keep last cue visible for reading
+        if(lastCueText){
+          subEl.innerText = lastCueText;
+          subEl.classList.remove('hidden');
+        } else {
+          subEl.classList.add('hidden');
+        }
+      } else {
+        subEl.classList.add('hidden');
+      }
+    }
+    requestAnimationFrame(update);
+  }
+  requestAnimationFrame(update);
+
+  // reload button
+  reloadBtn.addEventListener('click', async () => {
+    await loadSrt();
+    lastCueText = null;
+  });
+
+  // Fullscreen handling:
+  // We'll request fullscreen on the container (so overlay + video both go fullscreen).
+  fsBtn.addEventListener('click', async () => {
+    try {
+      if (!document.fullscreenElement) {
+        await container.requestFullscreen();
+      } else {
+        if (document.exitFullscreen) await document.exitFullscreen();
+      }
+    } catch (e) { console.warn('Fullscreen error', e); }
+  });
+
+  // Add / remove .fs class for styling when fullscreen changes
+  document.addEventListener('fullscreenchange', () => {
+    if (document.fullscreenElement === container) {
+      container.classList.add('fs');
+    } else {
+      container.classList.remove('fs');
+    }
+  });
+
+  // Also ensure that the overlay remains visible if user uses video native fullscreen:
+  // if the user makes the video element fullscreen (not the container), we try to re-request container fullscreen
+  video.addEventListener('fullscreenchange', async () => {
+    // some browsers fire this on the video; try to ensure container is fullscreen instead
+    if (document.fullscreenElement && document.fullscreenElement !== container) {
+      // do nothing — user intentionally fullscreened another element
+    }
+  });
+
+})();
+</script>
+</body>
+</html>

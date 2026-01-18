@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Video Player — native subtitles</title>
+  <style>
+    body { background: #111; color: #fff; display:flex; height:100vh; align-items:center; justify-content:center; margin:0; }
+    video { max-width:90vw; max-height:90vh; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,0.6); }
+  </style>
+</head>
+<body>
+  <video id="player" controls crossorigin="anonymous">
+    <source src="sample2.mp4" type="video/mp4">
+    <track id="track" label="Actions" kind="subtitles" srclang="en" src="sample.vtt" default>
+    Your browser does not support the video tag.
+  </video>
+</body>
+</html>
